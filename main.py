@@ -1,5 +1,6 @@
 import logging
 import os
+import asyncio
 from datetime import datetime, timedelta
 import pytz
 from dotenv import load_dotenv
@@ -242,6 +243,7 @@ async def show_today_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not tasks:
         msg = f"📅 *Today's Plan ({today_str})*\n━━━━━━━━━━━━\n🎉 No tasks scheduled for today!"
+        kb = []
     else:
         completed = sum(1 for t in tasks if t["status"] == "completed")
         pending = len(tasks) - completed
@@ -385,13 +387,21 @@ async def tz_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def post_init(application: Application):
+    """Initialize database and start background scheduler after event loop starts."""
+    await db.init_db()
+    scheduler = setup_scheduler(application)
+    scheduler.start()
+    logger.info("Database initialized and scheduler started.")
+
+
 def main():
     token = os.getenv("BOT_TOKEN")
     if not token:
         logger.error("BOT_TOKEN environment variable missing!")
         return
 
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(token).post_init(post_init).build()
 
     # Conversation Handler for Add Task
     add_conv = ConversationHandler(
@@ -414,7 +424,8 @@ def main():
             PRIORITY: [CallbackQueryHandler(add_priority, pattern="^prio_")],
             REMINDER: [CallbackQueryHandler(add_reminder_and_save, pattern="^rem_")],
         },
-        fallbacks=[CommandHandler("cancel", cancel_add)]
+        fallbacks=[CommandHandler("cancel", cancel_add)],
+        per_message=False
     )
 
     # Conversation Handler for Timezone Settings
@@ -423,7 +434,8 @@ def main():
         states={
             SET_TZ: [CallbackQueryHandler(tz_save, pattern="^settz_")]
         },
-        fallbacks=[CommandHandler("cancel", cancel_add), CallbackQueryHandler(start_cmd, pattern="^btn_main$")]
+        fallbacks=[CommandHandler("cancel", cancel_add), CallbackQueryHandler(start_cmd, pattern="^btn_main$")],
+        per_message=False
     )
 
     app.add_handler(CommandHandler("start", start_cmd))
@@ -446,13 +458,6 @@ def main():
     app.add_handler(CallbackQueryHandler(settings_menu, pattern="^btn_settings$"))
     app.add_handler(CallbackQueryHandler(help_cmd, pattern="^btn_reminders$"))
     app.add_handler(CallbackQueryHandler(task_action_handler, pattern="^(done_|del_)"))
-
-    # Initialize DB & Scheduler
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(db.init_db())
-    
-    scheduler = setup_scheduler(app)
-    scheduler.start()
 
     logger.info("Bot is starting polling...")
     app.run_polling(drop_pending_updates=True)
